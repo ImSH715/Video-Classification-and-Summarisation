@@ -2,7 +2,7 @@
 Classify and summarise the action from the videos by using pyTorch environment with action video dataset
 - The UCF101-action dataset was used to train CNN-LSTM model.
 - The two models are successfully implemented and trained in 150 epochs.
-- Resulted
+- Results
 
 
 | Metric                 | Value    |
