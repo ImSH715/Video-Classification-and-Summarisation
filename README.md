@@ -18,4 +18,4 @@ Classify and summarise the action from the videos by using pyTorch environment w
 | Validation Recall      | 0.9897   |
 
 More information about the project:
-Please check the following report (https://github.com/ImSH715/Video-Classification-and-Summarisation/blob/main/Report/Seunghyun%20Im%20-%20Dissertation.pdf)
+[Please check the following report](https://github.com/ImSH715/Video-Classification-and-Summarisation/blob/main/Report/Seunghyun%20Im%20-%20Dissertation.pdf)
