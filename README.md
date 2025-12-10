@@ -17,5 +17,12 @@ Classify and summarise the action from the videos by using pyTorch environment w
 | Training Recall        | 0.9865   |
 | Validation Recall      | 0.9897   |
 
+- To test and execute the model, two GUI applications were implemented. One supports classification task and the other for summarisation task.
+- Classification Introduction
+  - Upload model file
+  - Upload video to classify or Click random video button to classify the input.
+- Summarisation Introdcution
+  - Upload model file
+  - Upload input video to summarise certain classified categories from the input video.
 More information about the project:
 [Please check the following report](https://github.com/ImSH715/Video-Classification-and-Summarisation/blob/main/Report/Seunghyun%20Im%20-%20Dissertation.pdf)
