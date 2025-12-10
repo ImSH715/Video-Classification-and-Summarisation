@@ -24,5 +24,6 @@ Classify and summarise the action from the videos by using pyTorch environment w
 - Summarisation Introdcution
   - Upload model file
   - Upload input video to summarise certain classified categories from the input video.
+
 More information about the project:
 [Please check the following report](https://github.com/ImSH715/Video-Classification-and-Summarisation/blob/main/Report/Seunghyun%20Im%20-%20Dissertation.pdf)
