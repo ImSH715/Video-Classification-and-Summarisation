@@ -1,79 +1,138 @@
+import os
+import time
 import torch
 import torch.optim as optim
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from dataset import UCF101Dataset
-from trainModel import CNNLSTM
-import torchvision.transforms as transforms
-import os
+from torchvision import transforms
+from PIL import Image
 
-DATA_DIR = "data"
-TRAIN_DIR = os.path.join(DATA_DIR, "train")
-TEST_DIR = os.path.join(DATA_DIR, "test")
+from models import CNNLSTM
+from dataset import ImageSequenceDataset, mean, std
 
-batch_size = 8
-num_classes = len([d for d in os.listdir(TRAIN_DIR) if os.path.isdir(os.path.join(TRAIN_DIR, d))])
-num_epochs = 10
-learning_rate = 0.001
+# dataset directory
+dataset_root = "data/UCF-101-frames" 
+# annotation file (train and test set in list)
+annotation_file = "data/UCFTrainTestList" 
 
-# Image transforms
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
+sequence_length = 20
+input_shape = (3, 128, 128)
+# Reduce batch size to reduce train runtime
+batch_size = 5 
+# Checkpoint to start from, ex) cnn_lstm_epoch_144.pth
+checkpoint = 140  
+# Ending epoch number
+num_epochs = 200
+learning_rate = 1e-4
+# directory to save checkpoint model
+checkpoint_dir = './checkpoints/' 
+# number of classes for optimised UCF-101
+num_classes = 57
 
-# Initialize the dataset and dataloaders
-train_dataset = UCF101Dataset(TRAIN_DIR, transform)
-test_dataset = UCF101Dataset(TEST_DIR, transform)
 
-# Ensure datasets have loaded properly and avoid reloading
-if len(train_dataset) == 0:
-    print("❌ ERROR: No data found in training directory.")
-    exit()
-if len(test_dataset) == 0:
-    print("❌ ERROR: No data found in testing directory.")
-    exit()
+os.makedirs(checkpoint_dir, exist_ok=True)
 
-# DataLoader initialization (only once)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+def get_transform():
+    """
+    Transform the input for resizing, tensor conversion, and normalisation by using torchvision
+    """
+    return transforms.Compose([
+        transforms.Resize(input_shape[1:], Image.BICUBIC),
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std),
+    ])
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = CNNLSTM(num_classes).to(device)
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+def main():
+    """
+    Main train function
+    """
 
-# Initialize best_loss to a very high value
-best_loss = float('inf')  # or a large number
+    """
+    Load train dataset and dataloaders
+    """
+    train_dataset = ImageSequenceDataset(dataset_root, annotation_file, sequence_length, transform=get_transform(), train=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
 
-# Training loop
-for epoch in range(num_epochs):
-    model.train()
-    total_loss = 0
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = CNNLSTM(num_classes=num_classes).to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    # Iterating over batches in the dataset (should happen only once per epoch)
-    for frames, labels in train_loader:
-        frames, labels = frames.to(device), labels.to(device)
+    """
+    Training continue from the configured checkpoint file (epoch number)
+    """
+    start_epoch = 0
+    if checkpoint > 0:
+        checkpoint_path = os.path.join(checkpoint_dir, f"cnn_lstm_epoch_{checkpoint}.pth")
+        if os.path.exists(checkpoint_path):
+            checkpoint_data = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint_data['model_state_dict'])
+            optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
+            start_epoch = checkpoint
+            print(f"\nResuming from checkpoint: {checkpoint_path}")
+            print(f"Resuming at epoch {start_epoch + 1}/{num_epochs}\n")
+        else:
+            print(f"Checkpoint file not found.")
+    else:
+        print("Starting training from 0")
 
-        optimizer.zero_grad()
-        outputs = model(frames)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+    """
+    Loop over epochs for the training
+    """
+    for epoch in range(start_epoch + 1, num_epochs + 1):
+        model.train()
+        running_loss, correct, total = 0.0, 0, 0
+        epoch_start_time = time.time()
+        num_batches = len(train_loader)
 
-        total_loss += loss.item()
+        print(f"\nEpoch [{epoch}/{num_epochs}] started.")
 
-    avg_loss = total_loss / len(train_loader)
-    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}")
+        for batch_idx, (images, labels) in enumerate(train_loader):
+            batch_start_time = time.time()
+            images, labels = images.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item() * images.size(0)
+            _, preds = outputs.max(1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
 
-    # Track best loss (for checkpointing or early stopping)
-    if avg_loss < best_loss:
-        best_loss = avg_loss
-        print(f"✨ New best loss: {best_loss:.4f} (Saving model)")
+            """
+            Prining Batch number, Loss fuction, Accuracy, and ETA for each batch
+            """
+            batch_loss = loss.item()
+            batch_acc = (preds == labels).float().mean().item() * 100
+            elapsed = time.time() - batch_start_time
+            batches_left = num_batches - (batch_idx + 1)
+            eta = elapsed * batches_left
 
-        # Save the model
-        torch.save(model.state_dict(), "best_model.pth")
+            print(f"Batch [{batch_idx+1}/{num_batches}] "
+                  f"Loss: {batch_loss:.4f} "
+                  f"Acc: {batch_acc:.2f}% "
+                  f"ETA: {int(eta//60)}m {int(eta%60)}s")
+        """
+        Printing Loss function, Accuracy, and ETA for each epoch
+        """
+        epoch_loss = running_loss / total
+        epoch_acc = correct / total * 100
+        epoch_time = time.time() - epoch_start_time
+        print(f"\nEpoch [{epoch}/{num_epochs}] completed. "
+              f"Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.2f}% "
+              f"Time: {int(epoch_time//60)}m {int(epoch_time%60)}s")
 
-# Save model after training
-torch.save(model.state_dict(), "model.pth")
+        """
+        Save trained model into (.pth) file, after each epoch in the name of cnn_lstm_epoch(epoch_number).pth
+        """
+        checkpoint_save_path = os.path.join(checkpoint_dir, f"cnn_lstm_epoch_{epoch}.pth")
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+        }, checkpoint_save_path)
+
+if __name__ == '__main__':
+    # main function to start the script
+    main()

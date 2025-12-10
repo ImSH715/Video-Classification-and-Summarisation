@@ -1,132 +1,211 @@
 import sys
-import cv2
+import os
+import random
+import glob
+from pathlib import Path
 import torch
-import numpy as np
-from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QFileDialog, QVBoxLayout
-from PyQt6.QtGui import QPixmap, QImage
 from torchvision import transforms
-from trainModel import CNNLSTM
-from dataset import UCF101Dataset  # Import dataset to load class names
+from PIL import Image
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QFileDialog, QMessageBox
+)
+from PyQt6.QtGui import QPixmap, QImage
+from models import CNNLSTM
+from dataset import ImageSequenceDataset, mean, std
 
-# Load class names from the dataset
-train_dataset = UCF101Dataset("data/train")  # Adjust path if needed
-idx_to_class = {v: k for k, v in train_dataset.class_to_idx.items()}  # Reverse mapping
+# dataset directory
+dataset_root = "data/UCF-101-frames"
+# annotation file directory
+annotation_file = "data/UCFTrainTestList"
+sequence_length = 20
+input_size = (128, 128)
+# number of classes for the optimised dataset
+num_classes = 57
 
-# Load trained model
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = CNNLSTM(num_classes=len(idx_to_class)).to(device)
-model.load_state_dict(torch.load("model.pth", map_location=device))
-model.eval()
-
-# Video Frame Processing
-def extract_frames(video_path, max_frames=10):
-    cap = cv2.VideoCapture(video_path)
-    frames = []
-    
-    transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
+def get_transform():
+    """
+    Transform the input for resizing, tensor conversion, and normalisation by using torchvision
+    """
+    return transforms.Compose([
+        transforms.Resize(input_size),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        transforms.Normalize(mean, std)
     ])
 
-    while len(frames) < max_frames:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame = transform(frame)
-        frames.append(frame)
-
-    cap.release()
-    if len(frames) < max_frames:
-        return None
-    return torch.stack(frames).unsqueeze(0).to(device)
-
-# PyQt GUI
-class VideoClassifierApp(QWidget):
+class VideoClassificationApp(QWidget):
+    """
+    Video classification Application using a pre-trained CNN-LSTM model
+    However, there will be upload button for the users to select a model resulted high accuracy
+    """
     def __init__(self):
+        """
+        App window, and GUI elements initialisation
+        """
         super().__init__()
-        self.initUI()
-
-    def initUI(self):
         self.setWindowTitle("Video Classification App")
-        self.setGeometry(100, 100, 500, 400)
+        self.setGeometry(100, 100, 800, 600)
+        self.model = None
+        self.class_names = []
+        self.sequence_length = sequence_length
+        self.input_size = input_size
+        self.num_classes = num_classes
+        self.checkpoint_path = ""
+        self.init_ui()
+        self.load_class_names()
 
-        # UI Elements
-        self.label = QLabel("Upload a video file", self)
-        self.label.setStyleSheet("font-size: 14px;")
-        self.label.setFixedHeight(30)
-
-        self.image_label = QLabel(self)
-        self.image_label.setFixedSize(300, 200)
-
-        self.upload_button = QPushButton("Upload Video", self)
-        self.upload_button.clicked.connect(self.upload_video)
-
-        self.predict_button = QPushButton("Predict Action", self)
-        self.predict_button.clicked.connect(self.predict_action)
-        self.predict_button.setEnabled(False)
-
-        self.result_label = QLabel("", self)
-        self.result_label.setStyleSheet("font-size: 16px; font-weight: bold;")
-
-        # Layout
+    def init_ui(self):
+        """
+        UI setup to display classification application for the user
+        """
+        self.image_label = QLabel("Video Frame:")
+        self.prediction_label = QLabel("Prediction:")
+        self.model_select_button = QPushButton("Select Model")
+        self.model_select_button.clicked.connect(self.select_model_checkpoint)
+        self.upload_button = QPushButton("Classify Random Video")
+        self.upload_button.clicked.connect(self.load_random_video)
+        self.video_upload_button = QPushButton("Upload Video")
+        self.video_upload_button.clicked.connect(self.upload_video)
         layout = QVBoxLayout()
-        layout.addWidget(self.label)
         layout.addWidget(self.image_label)
+        layout.addWidget(self.prediction_label)
+        layout.addWidget(self.model_select_button)
+        layout.addWidget(self.video_upload_button)
         layout.addWidget(self.upload_button)
-        layout.addWidget(self.predict_button)
-        layout.addWidget(self.result_label)
         self.setLayout(layout)
 
-        self.video_path = None
+    def select_model_checkpoint(self):
+        """
+        Wait for the user to upload trained model (checkpoint) file
+        Load and update the model 
+        """
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Model", ".", "PyTorch Checkpoint Files (*.pth *.pt)")
+        if file_path:
+            self.checkpoint_path = file_path
+            self.load_model()
+            QMessageBox.information(self, "Model Selected", f"Model checkpoint selected: {self.checkpoint_path}")
+
+    def load_model(self):
+        """
+        Load selected trained model file (.pth)
+        Loads model weights from selected checkpoint path
+        """
+        if not self.checkpoint_path:
+            QMessageBox.warning(self, "Warning", "Please select a model")
+            return
+        try:
+            self.model = CNNLSTM(num_classes=self.num_classes)
+            checkpoint = torch.load(self.checkpoint_path, map_location="cpu")
+            state_dict = checkpoint.get('model_state_dict', checkpoint)
+            self.model.load_state_dict(state_dict)
+            self.model.eval()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load model: {e}")
+            sys.exit()
+
+    def load_class_names(self):
+        """ Loads the list of class names from the dataset utility. """
+        temp_dataset = ImageSequenceDataset(
+            dataset_root,
+            annotation_file,
+            self.sequence_length,
+            transform=get_transform(),
+            train=True
+        )
+        self.class_names = temp_dataset.label_names
+        self.num_classes = len(self.class_names)
+
+    def load_random_video(self):
+        """
+        Allow random video from the dataset
+        Predict the class and display the result in the screen
+        """
+        all_actions = [d for d in os.listdir(dataset_root) if os.path.isdir(os.path.join(dataset_root, d))]
+        if not all_actions:
+            QMessageBox.warning(self, "Warning", "UCF-101 frame directory not found")
+            return
+        random_action = random.choice(all_actions)
+        action_path = os.path.join(dataset_root, random_action)
+        all_videos = [d for d in os.listdir(action_path) if os.path.isdir(os.path.join(action_path, d))]
+        if not all_videos:
+            QMessageBox.warning(self, "Warning", f"No videos found in {random_action} action")
+            return
+        random_video = random.choice(all_videos)
+        video_path = os.path.join(action_path, random_video)
+        image_paths = sorted(glob.glob(os.path.join(video_path, '*.jpg')), key=lambda x: int(Path(x).stem))
+        if not image_paths or len(image_paths) < self.sequence_length:
+            QMessageBox.warning(self, "Warning", "Selected video does not have enough frames")
+            return
+        selected_paths = image_paths[:self.sequence_length]
+        images = [get_transform()(Image.open(p).convert('RGB')) for p in selected_paths]
+        input_tensor = torch.stack(images).unsqueeze(0)
+        with torch.no_grad():
+            output = self.model(input_tensor)
+            probabilities = torch.softmax(output, dim=1)
+            predicted_class_index = torch.argmax(probabilities, dim=1).item()
+            predicted_class_name = self.class_names[predicted_class_index]
+            accuracy = probabilities[0, predicted_class_index].item() * 100
+        self.prediction_label.setText(f"Prediction: {predicted_class_name} (accuracy: {accuracy:.2f}%)")
+        self.display_frame(Image.open(selected_paths[0]).convert('RGB'))
 
     def upload_video(self):
-        file_dialog = QFileDialog()
-        file_path, _ = file_dialog.getOpenFileName(self, "Select Video", "", "Videos (*.mp4 *.avi *.mov)")
-
+        """ 
+        Display dialogs for the user to upload video
+        Accordingly the screen display predicted action class
+        """
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Video File", ".", "Video Files (*.mp4 *.avi *.mov)")
         if file_path:
-            self.video_path = file_path
-            self.label.setText(f"Selected: {file_path.split('/')[-1]}")
-            self.display_video_thumbnail()
-            self.predict_button.setEnabled(True)
+            frame_paths = self.process_video_to_frames(file_path)
+            if not frame_paths or len(frame_paths) < self.sequence_length:
+                QMessageBox.warning(self, "Warning", "Selected video does not have enough frames.")
+                return
+            selected_paths = frame_paths[:self.sequence_length]
+            images = [get_transform()(Image.open(p).convert('RGB')) for p in selected_paths]
+            input_tensor = torch.stack(images).unsqueeze(0)
+            with torch.no_grad():
+                output = self.model(input_tensor)
+                probabilities = torch.softmax(output, dim=1)
+                predicted_class_index = torch.argmax(probabilities, dim=1).item()
+                predicted_class_name = self.class_names[predicted_class_index]
+                accuracy = probabilities[0, predicted_class_index].item() * 100
+            self.prediction_label.setText(f"Prediction: {predicted_class_name} (accuracy: {accuracy:.2f}%)")
+            self.display_frame(Image.open(selected_paths[0]).convert('RGB'))
 
-    def display_video_thumbnail(self):
-        cap = cv2.VideoCapture(self.video_path)
-        ret, frame = cap.read()
+    def process_video_to_frames(self, video_path):
+        """
+        Extract frames from a dataset and return the classified path
+        """
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        temp_dir = "temp_frames"
+        os.makedirs(temp_dir, exist_ok=True)
+        frame_paths = []
+        frame_number = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame_path = os.path.join(temp_dir, f"frame_{frame_number:04d}.jpg")
+            cv2.imwrite(frame_path, frame)
+            frame_paths.append(frame_path)
+            frame_number += 1
         cap.release()
+        return frame_paths
 
-        if ret:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = frame.shape
-            bytes_per_line = ch * w
-            qimg = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(qimg)
-            self.image_label.setPixmap(pixmap.scaled(300, 200))
+    def display_frame(self, img):
+        """ 
+        Shows the first fram of the input as a preview 
+        """
+        width, height = 400, 300
+        img = img.resize((width, height))
+        q_image = QImage(img.tobytes("raw", "RGB"), width, height, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(q_image)
+        self.image_label.setPixmap(pixmap)
 
-    def predict_action(self):
-        if not self.video_path:
-            return
-
-        frames = extract_frames(self.video_path)
-        if frames is None:
-            self.result_label.setText("⚠️ Not enough frames extracted!")
-            return
-
-        with torch.no_grad():
-            output = model(frames)
-            _, predicted = torch.max(output, 1)
-            predicted_index = predicted.item()
-
-            # Get the action name
-            predicted_class = idx_to_class.get(predicted_index, "Unknown")
-
-        self.result_label.setText(f"Predicted Action: {predicted_class} ({predicted_index})")
-
-# Run the application
-if __name__ == "__main__":
+if __name__ == '__main__':
+    """
+    Main function to generate user interface for classification application
+    """
     app = QApplication(sys.argv)
-    window = VideoClassifierApp()
+    window = VideoClassificationApp()
     window.show()
     sys.exit(app.exec())

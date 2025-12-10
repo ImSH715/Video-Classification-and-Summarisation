@@ -1,43 +1,89 @@
-import os
 import glob
+import random
+from pathlib import Path
 import torch
 from torch.utils.data import Dataset
-from torchvision import transforms
 from PIL import Image
 
-class UCF101Dataset(Dataset):
-    def __init__(self, root_dir, transform=None):
-        self.root_dir = root_dir
+"""
+To transform the extracted frames, ImageNet is used to state mean and std for normalization
+"""
+mean = [0.485, 0.456, 0.406]
+std = [0.229, 0.224, 0.225]
+
+class ImageSequenceDataset(Dataset):
+    """
+    Dataset loading sequence of image frames for video classification
+    """
+    def __init__(self, root_dir, annotation_file, sequence_length, transform=None, train=True):
+        """
+        Initialise dataset
+        Read the label mapping (classInd.txt in the UCFTrainTestList folder)
+        Load train and test video frame sequences from framed files
+        """
+        self.root_dir = Path(root_dir)
+        self.annotation_file = Path(annotation_file)
+        self.sequence_length = sequence_length
         self.transform = transform
-        self.data = []
-        self.class_to_idx = {}
+        self.train = train
+        self.label_mapping = self._extract_label_mapping(self.annotation_file)
+        self.sequences = self._load_sequences()
+        self.label_names = sorted(self.label_mapping.keys())
+        self.num_classes = len(self.label_names)
 
-        if not os.path.exists(root_dir):
-            return
+    def _extract_label_mapping(self, split_path):
+        """
+        Read classInd.txt to map action labels
+        """
+        label_path = split_path / "classInd.txt"
+        label_mapping = {}
+        with open(label_path) as f:
+            for line in f:
+                label, action = line.split()
+                label_mapping[action] = int(label) - 1
+        return label_mapping
 
-        # Faster directory traversal using os.scandir()
-        class_folders = [entry.name for entry in os.scandir(root_dir) if entry.is_dir()]
-        self.class_to_idx = {cls: i for i, cls in enumerate(class_folders)}
-
-        for class_name, class_idx in self.class_to_idx.items():
-            class_path = os.path.join(root_dir, class_name)
-
-            # Load and group frames by video prefix
-            grouped_frames = {}
-            for frame in glob.iglob(os.path.join(class_path, "*.jpg")):
-                video_prefix = "_".join(frame.split("_")[:-1])  # Extract video identifier
-                grouped_frames.setdefault(video_prefix, []).append(frame)
-
-            # Store only valid sequences (at least 10 frames)
-            self.data.extend(
-                (sorted(frames)[:10], class_idx) for frames in grouped_frames.values() if len(frames) >= 10
-            )
+    def _load_sequences(self):
+        """
+        Load all video frame sequences according to the listed split file based on the trainlist and testlist text file
+        Include the videos including sufficient amount of frames
+        """
+        sequences = []
+        split_file = "trainlist01.txt" if self.train else "testlist01.txt"
+        split_file_path = self.annotation_file / split_file
+        with open(split_file_path) as f:
+            for line in f:
+                video_name = Path(line.split(" ")[0])
+                action_name = video_name.parts[0]
+                image_dir = self.root_dir / action_name / video_name.name
+                if image_dir.is_dir():
+                    image_paths = sorted(glob.glob(f"{image_dir}/*.jpg"), key=lambda x: int(Path(x).stem))
+                    if len(image_paths) >= self.sequence_length:
+                        sequences.append((image_paths, self.label_mapping[action_name]))
+        return sequences
 
     def __len__(self):
-        return len(self.data)
+        """
+        Return number of sequences in the dataset
+        """
+        return len(self.sequences)
 
     def __getitem__(self, idx):
-        frames, label = self.data[idx]
-        images = [self.transform(Image.open(f).convert("RGB")) for f in frames]
+        """
+        Retrieve a sequence of images and its label for training or testing
+        Random contiguous sequence is selected for training set
+        Use the first frame for testing set (Padding the dataset if required)
+        (Tensor[sequence_length, 3, H, W], target_label) as a return value
+        """
+        image_paths, target = self.sequences[idx]
+        num_frames = len(image_paths)
+        if self.train:
+            start_index = random.randint(0, num_frames - self.sequence_length)
+            selected_paths = image_paths[start_index : start_index + self.sequence_length]
+        else:
+            selected_paths = image_paths[:self.sequence_length]
+            if len(selected_paths) < self.sequence_length:
+                selected_paths += [selected_paths[-1]] * (self.sequence_length - len(selected_paths))
 
-        return torch.stack(images), torch.tensor(label)
+        images = [self.transform(Image.open(p).convert('RGB')) for p in selected_paths]
+        return torch.stack(images), target
