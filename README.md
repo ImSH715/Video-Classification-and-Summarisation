@@ -6,7 +6,7 @@ Classify and summarise the action from the input videos by using pyTorch environ
 - The two models are successfully implemented and trained in 150 epochs.
 
 > It includes detailed explanation and results on the bottom of the description.
-> Please check the report to see the entire report
+> Please click on the link to check entire report
 ## Guideline
 - Download UCF101 dataset
 - Run dataset.py to run the dataset preparation
