@@ -1,8 +1,11 @@
 # Video-Classification-and-Summarisation
 ## Summary
-Classify and summarise the action from the videos by using pyTorch environment with action video dataset
+This project is a dissertation project:
+Classify and summarise the action from the input videos by using pyTorch environment with action video dataset
 - The UCF101-action dataset was used to train CNN-LSTM model.
 - The two models are successfully implemented and trained in 150 epochs.
+It includes detailed explanation and results on the bottom of the description.
+Please check the report to see the entire report
 ## Guideline
 - Download UCF101 dataset
 - Run dataset.py to run the dataset preparation
