@@ -5,7 +5,9 @@ Classify and summarise the action from the videos by using pyTorch environment w
 - The two models are successfully implemented and trained in 150 epochs.
 ## Guideline
 - Download UCF101 dataset
-- Run
+- Run dataset.py to run the dataset preparation
+### To check the GUI alication
+
 ## Tech Stack
 - Python
 - PyTorch
