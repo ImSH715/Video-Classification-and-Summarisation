@@ -7,7 +7,10 @@ Classify and summarise the action from the videos by using pyTorch environment w
 - Download UCF101 dataset
 - Run dataset.py to run the dataset preparation
 ### To check the GUI alication
-
+- Run classification_app.py to check classification part
+- Run Summarisation_app.py to check summarisation part
+- First upload a .pth file to upload and load the trained model
+- Upload input video to generate classified label or summarised video.
 ## Tech Stack
 - Python
 - PyTorch
